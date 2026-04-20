@@ -1,0 +1,22 @@
+venv/
+.env
+# Python-артефакты
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# IDE / редакторы
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS / системный мусор
+.DS_Store
+Thumbs.db
