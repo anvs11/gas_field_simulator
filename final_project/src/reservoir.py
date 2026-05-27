@@ -52,7 +52,6 @@ class Reservoir:
         Z_curr = self.fluid.z(P_curr)
         rho_curr = self.fluid.ro(P_curr)
 
-        # формула материального баланса (раздел 2.3)
-        P_next = P_curr - (Z_curr * self.rho_std / rho_curr) * (q_total / self.resprops.V) * dt
+        delta_P = P_curr * (Z_curr * self.rho_std / rho_curr) * (q_total / self.resprops.V) * dt
 
-        return P_next
+        return max(P_curr - delta_P, 0.0)
