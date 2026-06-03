@@ -45,7 +45,7 @@ class Pipe:
         if Re < 2300.0:  # ламинарный режим
             return 64.0 / Re
 
-        if Re < 2300.0: # при ламинарном режиме используется формула Пуазейля
+        if Re < 2300.0:  # при ламинарном режиме используется формула Пуазейля
             return 64.0 / Re
 
         # для турбулентного режима - неявное уравнение Колбрука–Уайта
@@ -84,20 +84,20 @@ class Pipe:
         # расчет скорости потока по формуле v = (4 * q_std * Bg) / (π * D² * 86400)
         v = (4.0 * q * Bg) / (math.pi * self.D ** 2 * 86400.0)  # м/с
 
-        Re = (rho * v * self.D) / mu_Pa_s # число Рейнольдса
+        Re = (rho * v * self.D) / mu_Pa_s  # число Рейнольдса
 
         # коэффициент трения
         rel_rough = self.roughness / self.D
         lam = self._calc_lambda(Re, rel_rough)
 
-        # перепад давления (Па → атм)
+        # перепад давления (Па -> атм)
         delta_P_friction_Pa = lam * (self.L / self.D) * (rho * v ** 2 / 2.0)
         delta_P_hydro_Pa = rho * self.g * self.H
         delta_P_total_Pa = delta_P_friction_Pa + delta_P_hydro_Pa
         delta_P_atm = delta_P_total_Pa / 101325.0
 
-        P_in = P # давление на входе
-        P_out = P_in - delta_P_atm # давление на выходе
+        P_in = P  # давление на входе
+        P_out = P_in - delta_P_atm  # давление на выходе
         q_res = q * Bg  # объёмный расход при местных условиях
 
         return NodeState(

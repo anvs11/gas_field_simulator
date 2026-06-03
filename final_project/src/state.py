@@ -7,6 +7,7 @@
 
 from dataclasses import dataclass
 
+
 @dataclass
 class NodeState:
     name: str              # идентификатор элемента ("well_1", "shlyf", "dcs")
@@ -17,5 +18,3 @@ class NodeState:
     q_res: float | None    # объёмный расход при местных условиях [м³/сут]
     v: float | None        # скорость потока [м/с]
     rho: float | None      # плотность газа [кг/м³]
-
-

@@ -54,10 +54,10 @@ class Well:
         """
         # Газ поступает из пласта, поэтому вязкость считается при пластовом давлении
         mu = self.fluid.mu(P_res)  # сП
-        geo_term = self.k * self.h / math.log(self.re / self.rw) # геометрический фактор
+        geo_term = self.k * self.h / math.log(self.re / self.rw)  # геометрический фактор
 
         # C = BETA * (геометрия) / (вязкость)
-        C = (self.BETA * geo_term) / mu # коэффициент продуктивности
+        C = (self.BETA * geo_term) / mu  # коэффициент продуктивности
 
         return C
 

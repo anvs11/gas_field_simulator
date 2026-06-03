@@ -1,15 +1,17 @@
 from dataclasses import dataclass
 from src.fluid import Fluid
 
+
 @dataclass
 class ResProps:
     """
     Контейнер параметров пласта
     Параметры продуктивности (k, h, re, rw) в Reservoir не хранятся
     """
-    P: float # давление, атм
-    V: float # объём, м³
-    T: float # температура, К
+    P: float  # давление, атм
+    V: float  # объём, м³
+    T: float  # температура, К
+
 
 class Reservoir:
     """

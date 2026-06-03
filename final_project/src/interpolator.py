@@ -20,7 +20,7 @@ class LinearInterpolator:
         # Проверка сортировки по возрастанию
         for i in range(len(xs) - 1):
             if xs[i] >= xs[i + 1]:
-                raise ValueError(f"xs должны быть строго отсортированы по возрастанию")
+                raise ValueError("xs должны быть строго отсортированы по возрастанию")
 
         self.xs = xs
         self.ys = ys

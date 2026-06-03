@@ -1,9 +1,7 @@
-import numpy as np
 import pandas as pd
 from scipy.optimize import fsolve
 from src.state import NodeState
 from src.reservoir import Reservoir
-from src.well import Well
 from src.pipe import Pipe
 from src.compressor import DCS
 
@@ -29,12 +27,12 @@ class FieldSimulator:
         qs = [q1, q2, q3]
         res = [0.0] * 4
 
-        # === Уравнения 1-3: баланс для каждой скважины ===
+        # баланс для каждой скважины
         for i, well in enumerate(self.wells):
-            # Итерационный поиск P_bhp для расчёта свойств в трубе
+            # итерационный поиск P_bhp для расчёта свойств в трубе
             P_bhp = P_man + 5.0  # начальное приближение: +5 атм к устьевому
             for _ in range(5):  # обычно хватает 2-3 итераций
-                # Свойства при среднем давлении в трубе
+                # свойства при среднем давлении в трубе
                 P_avg = (P_bhp + P_man) / 2.0
                 dP_tube = well.pipe.dp(P_avg, qs[i]).dP
                 P_bhp_new = P_man + dP_tube
@@ -42,20 +40,20 @@ class FieldSimulator:
                     break
                 P_bhp = P_bhp_new
 
-            # Коэффициент продуктивности при пластовом давлении
+            # коэффициент продуктивности при пластовом давлении
             C = well.get_productivity_index(P_res)
 
             # Невязка: q_i - C_i * (P_res - P_bhp) = 0
             # где P_bhp = P_man + dP_tube
             res[i] = qs[i] - C * (P_res - P_bhp)
 
-        # === Уравнение 4: баланс шлейфа и ДКС ===
+        # баланс шлейфа и ДКС
         q_total_sys = sum(qs) + self.dcs.q_ext
-        # Для шлейфа: вход = P_man, выход = P_in_DCS
+        # для шлейфа: вход = P_man, выход = P_in_DCS
         dP_shlyf = self.shlyf.dp(P_man, q_total_sys).dP
         P_in_dcs = self.dcs.P_in()
 
-        # Невязка: фактическое P_man должно равняться P_in_DCS + потери в шлейфе
+        # фактическое P_man должно равняться P_in_DCS + потери в шлейфе
         res[3] = P_man - (P_in_dcs + dP_shlyf)
 
         return res
@@ -65,7 +63,7 @@ class FieldSimulator:
         Находит рабочую точку системы при заданном пластовом давлении.
         Возвращает словарь NodeState для всех элементов.
         """
-        # Начальное приближение по ТЗ
+        # Начальное приближение
         x0 = [500.0, 500.0, 500.0, self.dcs.P_in() + 5.0]
 
         sol, info, ier, mesg = fsolve(self._residuals, x0, args=(P_res,), full_output=True)
@@ -73,16 +71,25 @@ class FieldSimulator:
             print(f"[solve] Warning: fsolve convergence issue. {mesg}")
 
         q1, q2, q3, P_man = sol
-        # Требование ТЗ: обнуляем отрицательные дебиты
+        # обнуляем отрицательные дебиты
         qs = [max(0.0, q) for q in [q1, q2, q3]]
         q_total_wells = sum(qs)
 
         states = {}
         for i, q in enumerate(qs):
             well = self.wells[i]
-            # Пересчитываем точное состояние трубы с обнулённым дебитом
-            P_in_tube_approx = P_man + 10.0
-            pipe_state = well.pipe.dp(P_in_tube_approx, q)
+            # пересчитываем точное состояние трубы с обнулённым дебитом
+            # повторяю итерации из _residuals
+            P_bhp = P_man + 5.0
+            for _ in range(5):
+                P_avg = (P_bhp + P_man) / 2.0
+                dP_tube = well.pipe.dp(P_avg, q).dP
+                P_bhp_new = P_man + dP_tube
+                if abs(P_bhp_new - P_bhp) < 0.01:
+                    break
+                P_bhp = P_bhp_new
+
+            pipe_state = well.pipe.dp(P_man, q)
 
             # Реальное забойное давление = устьевое + потери
             actual_P_bhp = P_man + pipe_state.dP
@@ -152,7 +159,6 @@ class FieldSimulator:
             })
 
             # Обновление пластового давления по материальному балансу
-            # ВНИМАНИЕ: в баланс входит ТОЛЬКО дебит скважин. Сторонний газ q_ext не учитывается.
             P_next = self.reservoir.p2(q_total, dt)
             self.reservoir.resprops.P = P_next
 
