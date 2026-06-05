@@ -84,7 +84,7 @@ class Well:
             return 0.0
 
         C = self.get_productivity_index(P_res)
-        flow_rate = C * (P_res - P_bhp)
+        flow_rate = C * (P_res ** 2 - P_bhp ** 2)
 
         return flow_rate
 

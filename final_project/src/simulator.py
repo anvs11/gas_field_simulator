@@ -40,12 +40,7 @@ class FieldSimulator:
                     break
                 P_bhp = P_bhp_new
 
-            # коэффициент продуктивности при пластовом давлении
-            C = well.get_productivity_index(P_res)
-
-            # Невязка: q_i - C_i * (P_res - P_bhp) = 0
-            # где P_bhp = P_man + dP_tube
-            res[i] = qs[i] - C * (P_res - P_bhp)
+            res[i] = qs[i] - well.q(P_res, P_bhp)
 
         # баланс шлейфа и ДКС
         q_total_sys = sum(qs) + self.dcs.q_ext
@@ -78,20 +73,7 @@ class FieldSimulator:
         states = {}
         for i, q in enumerate(qs):
             well = self.wells[i]
-            # пересчитываем точное состояние трубы с обнулённым дебитом
-            # повторяю итерации из _residuals
-            P_bhp = P_man + 5.0
-            for _ in range(5):
-                P_avg = (P_bhp + P_man) / 2.0
-                dP_tube = well.pipe.dp(P_avg, q).dP
-                P_bhp_new = P_man + dP_tube
-                if abs(P_bhp_new - P_bhp) < 0.01:
-                    break
-                P_bhp = P_bhp_new
-
             pipe_state = well.pipe.dp(P_man, q)
-
-            # Реальное забойное давление = устьевое + потери
             actual_P_bhp = P_man + pipe_state.dP
 
             states[f'well_{i + 1}'] = NodeState(

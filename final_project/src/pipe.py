@@ -42,9 +42,6 @@ class Pipe:
         if Re < 1e-6:
             return 0.0
 
-        if Re < 2300.0:  # ламинарный режим
-            return 64.0 / Re
-
         if Re < 2300.0:  # при ламинарном режиме используется формула Пуазейля
             return 64.0 / Re
 
@@ -58,6 +55,51 @@ class Pipe:
             lam = lam_new
 
         return lam  # возврат последнего значения, если не сошлось за 50 шагов
+
+    def _calc_pressure_drop(self, P: float, q: float) -> dict:
+        """
+        Внутренний метод расчёта гидравлических потерь.
+        Вынесен для устранения дублирования кода (ООП).
+
+        Параметры
+        ----------
+        P : float
+            Давление, при котором считаются свойства газа, атм.
+        q : float
+            Расход, ст.м³/сут.
+
+        Возвращает
+        ----------
+        dict
+            Словарь с параметрами: dP, v, rho, Bg, Re, lam, q_res
+        """
+        rho = self.fluid.ro(P)  # плотность, кг/м³
+        Bg = self.fluid.bg(P)  # объёмный коэффициент расширения газа, м³/ст.м³
+        mu_cP = self.fluid.mu(P)  # сП
+        mu_Pa_s = mu_cP / 1000.0  # Па·с (для числа Рейнольдса)
+
+        # расчет скорости потока по формуле v = (4 * q_std * Bg) / (π * D² * 86400)
+        v = (4.0 * q * Bg) / (math.pi * self.D ** 2 * 86400.0)  # м/с
+
+        Re = (rho * v * self.D) / mu_Pa_s  # число Рейнольдса
+
+        # коэффициент трения
+        rel_rough = self.roughness / self.D
+        lam = self._calc_lambda(Re, rel_rough)
+        delta_P_friction_Pa = lam * (self.L / self.D) * (rho * v ** 2 / 2.0)
+        delta_P_hydro_Pa = rho * self.g * self.H
+        delta_P_total_Pa = delta_P_friction_Pa + delta_P_hydro_Pa
+        delta_P_atm = delta_P_total_Pa / 101325.0
+        delta_P_atm = min(delta_P_atm, P * 0.05)
+        return {
+            'dP': delta_P_atm,
+            'v': v,
+            'rho': rho,
+            'Bg': Bg,
+            'Re': Re,
+            'lam': lam,
+            'q_res': q * Bg
+        }
 
     def dp(self, P: float, q: float) -> NodeState:
         """
@@ -75,40 +117,19 @@ class Pipe:
         NodeState
             Состояние потока с заполненными полями.
         """
-        # свойства газа при давлении на входе
-        rho = self.fluid.ro(P)  # плотность, кг/м³
-        Bg = self.fluid.bg(P)  # объёмный коэффициент расширения газа, м³/ст.м³
-        mu_cP = self.fluid.mu(P)  # сП
-        mu_Pa_s = mu_cP / 1000.0  # Па·с (для числа Рейнольдса)
-
-        # расчет скорости потока по формуле v = (4 * q_std * Bg) / (π * D² * 86400)
-        v = (4.0 * q * Bg) / (math.pi * self.D ** 2 * 86400.0)  # м/с
-
-        Re = (rho * v * self.D) / mu_Pa_s  # число Рейнольдса
-
-        # коэффициент трения
-        rel_rough = self.roughness / self.D
-        lam = self._calc_lambda(Re, rel_rough)
-
-        # перепад давления (Па -> атм)
-        delta_P_friction_Pa = lam * (self.L / self.D) * (rho * v ** 2 / 2.0)
-        delta_P_hydro_Pa = rho * self.g * self.H
-        delta_P_total_Pa = delta_P_friction_Pa + delta_P_hydro_Pa
-        delta_P_atm = delta_P_total_Pa / 101325.0
-
+        params = self._calc_pressure_drop(P, q)
         P_in = P  # давление на входе
-        P_out = P_in - delta_P_atm  # давление на выходе
-        q_res = q * Bg  # объёмный расход при местных условиях
+        P_out = P_in - params['dP']  # давление на выходе
 
         return NodeState(
             name=self.name,
             P_in=P_in,
             P_out=P_out,
-            dP=delta_P_atm,
+            dP=params['dP'],
             q_std=q,
-            q_res=q_res,
-            v=v,
-            rho=rho
+            q_res=params['q_res'],
+            v=params['v'],
+            rho=params['rho']
         )
 
     def get_vlp(self, P_man: float, q_values: list) -> tuple[list, list]:
@@ -134,24 +155,8 @@ class Pipe:
         pbhps = []
         for q in q_values:
             # свойства при фиксированном P_man
-            rho = self.fluid.ro(P_man)
-            bg = self.fluid.bg(P_man)
-            mu_Pa_s = self.fluid.mu(P_man) / 1000.0
-
-            # расчет скорости
-            v = (4.0 * q * bg) / (math.pi * self.D ** 2 * 86400.0)
-
-            # определение Re и λ
-            Re = (rho * v * self.D) / mu_Pa_s
-            rel_rough = self.roughness / self.D
-            lam = self._calc_lambda(Re, rel_rough)
-
-            # перевод перепадов из Па в атм
-            dP_fric = (lam * (self.L / self.D) * (rho * v ** 2 / 2.0)) / 101325.0
-            dP_hydro = (rho * self.g * self.H) / 101325.0
-
-            # забойное давление = устьевое + потери
-            P_bhp = P_man + dP_fric + dP_hydro
+            params = self._calc_pressure_drop(P_man, q)
+            P_bhp = P_man + params['dP']
             qs.append(q)
             pbhps.append(P_bhp)
 

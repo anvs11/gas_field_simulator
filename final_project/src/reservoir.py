@@ -21,12 +21,7 @@ class Reservoir:
     def __init__(self, resprops: ResProps, fluid: Fluid):
         self.resprops = resprops
         self.fluid = fluid
-
-        # использую ту же логику расчёта, что и в Fluid
-        P_std_pa = 101325.0  # стандартное давление, Па
-        T_std = 293.15  # стандартная температура, K
-        Z_std = 1.0  # коэффициент сверхжимаемости, безразмерный
-        self.rho_std = (P_std_pa * fluid.M) / (Z_std * fluid.R * 1000.0 * T_std)
+        self.rho_std = fluid.rho_c
 
     def p2(self, q_total: float, dt: float = 1.0) -> float:
         """
