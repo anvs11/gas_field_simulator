@@ -1,163 +1,218 @@
 import math
-from src.state import NodeState
-from src.fluid import Fluid
+import numpy as np
+from scipy.optimize import fsolve
+from state import NodeState
+from fluid import Fluid
 
 
 class Pipe:
     """
     Гидравлическая модель трубы (НКТ, шлейф)
-    Расчёт перепада давления по уравнению Дарси–Вейсбаха
+    Пошаговый расчёт с учётом изменения PVT-свойств вдоль ствола
     """
 
     def __init__(self, L: float, D: float, roughness: float, fluid: Fluid,
                  vertical_depth: float = 0.0, name: str = ""):
-        """
-        Параметры
-        ----------
-        L : float
-            Длина трубы, м.
-        D : float
-            Внутренний диаметр, м.
-        roughness : float
-            Абсолютная шероховатость стенки δ, м.
-        fluid : Fluid
-            Объект с PVT-свойствами газа.
-        vertical_depth : float
-            Вертикальная глубина H, м (для горизонтального шлейфа = 0).
-        name : str
-            Идентификатор элемента (для NodeState).
-        """
         self.L = L
         self.D = D
         self.roughness = roughness
         self.fluid = fluid
         self.H = vertical_depth
         self.name = name
-        self.g = 9.81  # ускорение свободного падения, м/с²
+        self.g = 9.81
 
     def _calc_lambda(self, Re: float, rel_rough: float) -> float:
-        """
-        Расчёт коэффициента гидравлического сопротивления λ
-        """
+        """Расчёт коэффициента гидравлического сопротивления λ"""
         if Re < 1e-6:
             return 0.0
-
-        if Re < 2300.0:  # при ламинарном режиме используется формула Пуазейля
+        if Re < 2300.0:
             return 64.0 / Re
 
-        # для турбулентного режима - неявное уравнение Колбрука–Уайта
-        lam = 0.02  # начальное приближение
-        for _ in range(50):  # с запасом, сойтись должно быстрее
+        # Уравнение Колбрука-Уайта
+        lam = 0.02
+        for _ in range(50):
             term = rel_rough / 3.7 + 2.51 / (Re * math.sqrt(lam))
             lam_new = 1.0 / (-2.0 * math.log10(term)) ** 2
             if abs(lam_new - lam) < 1e-6:
                 return lam_new
             lam = lam_new
+        return lam
 
-        return lam  # возврат последнего значения, если не сошлось за 50 шагов
-
-    def _calc_pressure_drop(self, P: float, q: float) -> dict:
+    def _calc_pressure_step(self, P: float, q: float, dl: float, dz: float) -> float:
         """
-        Внутренний метод расчёта гидравлических потерь.
-        Вынесен для устранения дублирования кода (ООП).
-
-        Параметры
-        ----------
-        P : float
-            Давление, при котором считаются свойства газа, атм.
-        q : float
-            Расход, ст.м³/сут.
-
-        Возвращает
-        ----------
-        dict
-            Словарь с параметрами: dP, v, rho, Bg, Re, lam, q_res
+        Расчёт перепада давления на одном шаге (снизу вверх)
+        Возвращает давление на следующем шаге
         """
-        rho = self.fluid.ro(P)  # плотность, кг/м³
-        Bg = self.fluid.bg(P)  # объёмный коэффициент расширения газа, м³/ст.м³
-        mu_cP = self.fluid.mu(P)  # сП
-        mu_Pa_s = mu_cP / 1000.0  # Па·с (для числа Рейнольдса)
+        if P <= 0.1:
+            return 0.1
 
-        # расчет скорости потока по формуле v = (4 * q_std * Bg) / (π * D² * 86400)
-        v = (4.0 * q * Bg) / (math.pi * self.D ** 2 * 86400.0)  # м/с
+        # PVT-свойства
+        try:
+            rho = self.fluid.ro(P)
+            Bg = self.fluid.bg(P)
+            mu = self.fluid.mu(P) / 1000.0  # сП -> Па·с
 
-        Re = (rho * v * self.D) / mu_Pa_s  # число Рейнольдса
+            # Защиты от некорректных значений
+            rho = max(rho, 0.01)
+            Bg = min(max(Bg, 1e-6), 1.0)
+            mu = max(mu, 1e-6)
+        except:
+            return 0.1
 
-        # коэффициент трения
+        # Скорость потока
+        A = math.pi * self.D ** 2 / 4.0
+        v = (q / 86400.0) * Bg / A
+        v = max(min(v, 300.0), 1e-5)
+
+        # Число Рейнольдса
+        Re = rho * v * self.D / mu
+        Re = max(Re, 1.0)
+
+        # Коэффициент трения
         rel_rough = self.roughness / self.D
         lam = self._calc_lambda(Re, rel_rough)
-        delta_P_friction_Pa = lam * (self.L / self.D) * (rho * v ** 2 / 2.0)
-        delta_P_hydro_Pa = rho * self.g * self.H
-        delta_P_total_Pa = delta_P_friction_Pa + delta_P_hydro_Pa
-        delta_P_atm = delta_P_total_Pa / 101325.0
-        delta_P_atm = min(delta_P_atm, P * 0.05)
-        return {
-            'dP': delta_P_atm,
-            'v': v,
-            'rho': rho,
-            'Bg': Bg,
-            'Re': Re,
-            'lam': lam,
-            'q_res': q * Bg
-        }
+        lam = max(min(lam, 0.1), 0.008)
 
-    def dp(self, P: float, q: float) -> NodeState:
+        # Перепады давления
+        dp_fric = lam * (dl / self.D) * (rho * v ** 2 / 2.0)
+        dp_grav = rho * self.g * dz
+        dp_total = (dp_fric + dp_grav) / 101325.0  # Па -> атм
+
+        # Защита от отрицательного давления
+        P_new = P - dp_total
+        return max(P_new, 0.1)
+
+    def pwf_to_wh(self, P_bhp: float, q: float) -> float:
         """
-        Основной метод. Вычисляет перепад давления и возвращает состояние элемента.
-
-        Параметры
-        ----------
-        P : float
-            Давление на входе в трубу, атм.
-        q : float
-            Коммерческий расход, ст.м³/сут.
-
-        Возвращает
-        -------
-        NodeState
-            Состояние потока с заполненными полями.
+        Расчёт устьевого давления по забойному (движение снизу вверх)
         """
-        params = self._calc_pressure_drop(P, q)
-        P_in = P  # давление на входе
-        P_out = P_in - params['dP']  # давление на выходе
+        if P_bhp <= 0:
+            return 0.1
+
+        P = float(P_bhp)
+        dl = 50.0  # УМЕНЬШИЛ шаг для плавности (было 100)
+        n_steps = int(self.L // dl)
+        if self.L % dl != 0:
+            n_steps += 1
+
+        for i in range(n_steps):
+            # НЕ ПРЕРЫВАЕМ расчёт, даже если давление маленькое
+            if P < 0.1:
+                P = 0.1
+
+            dl_i = dl if i != n_steps - 1 else self.L - dl * (n_steps - 1)
+            dz = dl_i * (self.H / self.L) if self.L > 0 else 0
+
+            P = self._calc_pressure_step(P, q, dl_i, dz)
+
+        return max(P, 0.1)
+
+    def wh_to_pwf(self, P_wh: float, q: float) -> float:
+        """
+        Расчёт забойного давления по устьевому (движение сверху вниз)
+        Используется для метода dp
+        """
+        if P_wh <= 0:
+            return 0.1
+
+        P = float(P_wh)
+        dl = 100.0
+        n_steps = int(self.L // dl)
+        if self.L % dl != 0:
+            n_steps += 1
+
+        for i in range(n_steps):
+            if P <= 0.1:
+                return 0.1
+
+            dl_i = dl if i != n_steps - 1 else self.L - dl * (n_steps - 1)
+            dz = dl_i * (self.H / self.L) if self.L > 0 else 0
+
+            # Для движения сверху вниз добавляем перепад
+            try:
+                rho = self.fluid.ro(P)
+                Bg = self.fluid.bg(P)
+                mu = self.fluid.mu(P) / 1000.0
+
+                rho = max(rho, 0.01)
+                Bg = min(max(Bg, 1e-6), 1.0)
+                mu = max(mu, 1e-6)
+            except:
+                return 0.1
+
+            A = math.pi * self.D ** 2 / 4.0
+            v = (q / 86400.0) * Bg / A
+            v = max(min(v, 300.0), 1e-5)
+
+            Re = rho * v * self.D / mu
+            Re = max(Re, 1.0)
+
+            rel_rough = self.roughness / self.D
+            lam = self._calc_lambda(Re, rel_rough)
+            lam = max(min(lam, 0.1), 0.008)
+
+            dp_fric = lam * (dl_i / self.D) * (rho * v ** 2 / 2.0)
+            dp_grav = rho * self.g * dz
+            dp_total = (dp_fric + dp_grav) / 101325.0
+
+            P = P + dp_total
+
+        return max(P, 0.1)
+
+    def dp(self, P_in: float, q: float) -> NodeState:
+        """
+        Основной метод. Расчёт перепада давления.
+        Для НКТ: P_in = P_bhp (забой), P_out = P_wh (устье)
+        Для шлейфа: P_in = P_out_shlyf (выход), P_out = P_man (вход)
+        """
+        if self.H > 0:
+            # НКТ: движение снизу вверх (от забоя к устью)
+            P_out = self.pwf_to_wh(P_in, q)
+            dP = P_in - P_out
+        else:
+            # Шлейф: движение от выхода ко входу (против потока)
+            # P_in здесь — это давление на выходе из шлейфа (P_out_shlyf)
+            # Нам нужно найти давление на входе (P_man)
+            P_out = self.wh_to_pwf(P_in, q)  # считаем от выхода ко входу
+            dP = P_out - P_in  # P_man - P_out_shlyf
+
+        # PVT-свойства при среднем давлении
+        P_avg = (P_in + P_out) / 2.0
+        try:
+            rho = self.fluid.ro(P_avg)
+            Bg = self.fluid.bg(P_avg)
+            v = (4.0 * q * Bg) / (math.pi * self.D ** 2 * 86400.0)
+        except:
+            rho = 0.0
+            Bg = 0.0
+            v = 0.0
 
         return NodeState(
             name=self.name,
             P_in=P_in,
             P_out=P_out,
-            dP=params['dP'],
+            dP=abs(dP),  # ВАЖНО: всегда положительный перепад
             q_std=q,
-            q_res=params['q_res'],
-            v=params['v'],
-            rho=params['rho']
+            q_res=q * Bg if Bg else 0.0,
+            v=v,
+            rho=rho
         )
+
+    def get_vlp_point(self, P_wh: float, q: float) -> float:
+        """
+        Расчёт забойного давления при заданном устьевом и дебите.
+        Используется для построения VLP.
+        """
+        return self.wh_to_pwf(P_wh, q)
 
     def get_vlp(self, P_man: float, q_values: list) -> tuple[list, list]:
         """
-        Построение кривой VLP: P_bhp(q) при фиксированном давлении на манифольде
-
-        Формула: P_bhp = P_man + ΔP_friction + ΔP_hydrostatic
-        Свойства газа считаются при P_man (явная схема).
-
-        Параметры
-        ----------
-        P_man : float
-            Давление на манифольде/устье, атм.
-        q_values : list
-            Список дебитов для расчёта, ст.м³/сут.
-
-        Возвращает
-        ----------
-        tuple[list, list]
-            (q_std, P_bhp) — дебиты и соответствующие забойные давления
+        Построение кривой VLP: P_bhp(q) при фиксированном P_man
         """
         qs = []
         pbhps = []
         for q in q_values:
-            # свойства при фиксированном P_man
-            params = self._calc_pressure_drop(P_man, q)
-            P_bhp = P_man + params['dP']
+            P_bhp = self.get_vlp_point(P_man, q)
             qs.append(q)
             pbhps.append(P_bhp)
-
         return qs, pbhps

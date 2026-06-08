@@ -4,7 +4,7 @@ from src.state import NodeState
 from src.reservoir import Reservoir
 from src.pipe import Pipe
 from src.compressor import DCS
-
+import warnings
 
 class FieldSimulator:
     """
@@ -17,78 +17,72 @@ class FieldSimulator:
         self.wells = wells
         self.shlyf = shlyf
         self.dcs = dcs
+        self.prev_solution = None
 
     def _residuals(self, x: list, P_res: float) -> list:
-        """
-        Вектор невязок для fsolve.
-        x = [q1, q2, q3, P_man]
-        """
+        """Вектор невязок для fsolve. x = [q1, q2, q3, P_man]"""
         q1, q2, q3, P_man = x
-        qs = [q1, q2, q3]
+        qs = [max(0.0, q) for q in [q1, q2, q3]]
         res = [0.0] * 4
 
-        # баланс для каждой скважины
         for i, well in enumerate(self.wells):
-            # итерационный поиск P_bhp для расчёта свойств в трубе
-            P_bhp = P_man + 5.0  # начальное приближение: +5 атм к устьевому
-            for _ in range(5):  # обычно хватает 2-3 итераций
-                # свойства при среднем давлении в трубе
-                P_avg = (P_bhp + P_man) / 2.0
-                dP_tube = well.pipe.dp(P_avg, qs[i]).dP
-                P_bhp_new = P_man + dP_tube
-                if abs(P_bhp_new - P_bhp) < 0.01:
-                    break
-                P_bhp = P_bhp_new
-
+            # Прямой расчёт P_bhp через wh_to_pwf (пошаговый расчёт снизу вверх)
+            P_bhp = well.pipe.wh_to_pwf(P_man, qs[i])
             res[i] = qs[i] - well.q(P_res, P_bhp)
 
-        # баланс шлейфа и ДКС
         q_total_sys = sum(qs) + self.dcs.q_ext
-        # для шлейфа: вход = P_man, выход = P_in_DCS
-        dP_shlyf = self.shlyf.dp(P_man, q_total_sys).dP
+        dP_shlyf = self.shlyf.dp(self.dcs.P_in(), q_total_sys).dP
         P_in_dcs = self.dcs.P_in()
-
-        # фактическое P_man должно равняться P_in_DCS + потери в шлейфе
         res[3] = P_man - (P_in_dcs + dP_shlyf)
 
         return res
 
     def solve(self, P_res: float) -> dict:
-        """
-        Находит рабочую точку системы при заданном пластовом давлении.
-        Возвращает словарь NodeState для всех элементов.
-        """
-        # Начальное приближение
-        x0 = [500.0, 500.0, 500.0, self.dcs.P_in() + 5.0]
+        """Находит рабочую точку системы."""
+        if self.prev_solution is not None:
+            x0 = self.prev_solution
+        else:
+            x0 = [500.0, 500.0, 500.0, self.dcs.P_in() + 5.0]
 
-        sol, info, ier, mesg = fsolve(self._residuals, x0, args=(P_res,), full_output=True)
+        sol, info, ier, mesg = fsolve(
+            self._residuals, x0, args=(P_res,), full_output=True
+        )
+
         if ier != 1:
-            print(f"[solve] Warning: fsolve convergence issue. {mesg}")
+            warnings.warn(f"solve convergence issue: {mesg}")
 
+        self.prev_solution = sol
         q1, q2, q3, P_man = sol
-        # обнуляем отрицательные дебиты
         qs = [max(0.0, q) for q in [q1, q2, q3]]
-        q_total_wells = sum(qs)
 
         states = {}
         for i, q in enumerate(qs):
             well = self.wells[i]
-            pipe_state = well.pipe.dp(P_man, q)
-            actual_P_bhp = P_man + pipe_state.dP
+
+            # 1. Прямой расчёт P_bhp (пошагово снизу вверх)
+            P_bhp = well.pipe.wh_to_pwf(P_man, q)
+            dP = P_bhp - P_man
+
+            # 2. Расчёт v, rho, q_res при среднем давлении в трубе
+            P_avg = max(1.0, (P_bhp + P_man) / 2.0)
+            rho = well.pipe.fluid.ro(P_avg)
+            Bg = well.pipe.fluid.bg(P_avg)
+            v = (4.0 * q * Bg) / (math.pi * well.pipe.D ** 2 * 86400.0)
+            q_res = q * Bg
 
             states[f'well_{i + 1}'] = NodeState(
                 name=f'well_{i + 1}',
-                P_in=actual_P_bhp,
+                P_in=P_bhp,
                 P_out=P_man,
-                dP=pipe_state.dP,
+                dP=dP,
                 q_std=q,
-                q_res=pipe_state.q_res,
-                v=pipe_state.v,
-                rho=pipe_state.rho
+                q_res=q_res,
+                v=v,
+                rho=rho
             )
 
         # Состояние шлейфа
-        q_total_sys = q_total_wells + self.dcs.q_ext
+        q_total_sys = sum(qs) + self.dcs.q_ext
         states['shlyf'] = self.shlyf.dp(P_man, q_total_sys)
 
         # Состояние ДКС
